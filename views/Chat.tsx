@@ -8,7 +8,7 @@ const Chat = () => {
         justifyContent: 'center',
         alignItems: 'center',
       }}>
-      <Text>go, again</Text>
+      <Text>No waylo</Text>
     </View>
   );
 };
