@@ -14,7 +14,7 @@
     "type": "modules",
     "jsSrcsDir": "specs",
     "android": {
-      "javaPackageName": "com.sampleapp.specs"
+      "javaPackageName": "com.recoverychat.specs"
     }
   },
   "dependencies": {
