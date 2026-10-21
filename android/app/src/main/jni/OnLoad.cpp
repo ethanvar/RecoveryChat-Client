@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
@@ -68,12 +69,6 @@ cxxModuleProvider(const std::string &name,
   // either your application or from external libraries. The approach to follow
   // is similar to the following (for a module called `NativeCxxModuleExample`):
   //
-  // if (name == NativeCxxModuleExample::kModuleName) {
-  //   return std::make_shared<NativeCxxModuleExample>(jsInvoker);
-  // }
-
-  // This code registers the module so that when the JS side asks for it, the
-  // app can return it
   if (name == NativeChatModule::kModuleName) {
     return std::make_shared<NativeChatModule>(jsInvoker);
   }
