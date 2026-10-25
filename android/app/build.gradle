@@ -2,6 +2,21 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+
+def goModuleDir = file("../../shared/go")
+def goBuildDir = layout.buildDirectory.dir("go").get().asFile
+
+def goTargets = [
+    "arm64-v8a"  : [goarch: "arm64", triple: "aarch64-linux-android"],
+    "armeabi-v7a": [goarch: "arm",   triple: "armv7a-linux-androideabi"],
+    "x86"        : [goarch: "386",   triple: "i686-linux-android"],
+    "x86_64"     : [goarch: "amd64", triple: "x86_64-linux-android"],
+]
+
+// Keep the Go build in sync with whatever ABIs React Native is building.
+def enabledAbis = (findProperty("reactNativeArchitectures")
+        ?: "armeabi-v7a,arm64-v8a,x86,x86_64").split(",")*.trim()
+
 /**
  * This is the configuration block to customize your React Native Android app.
  * By default you don't need to apply any configuration, just uncomment the lines you need.
@@ -84,6 +99,14 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+
+        externalNativeBuild {
+            cmake {
+                // Tells CMake where the per-ABI Go shared libraries live.
+                // In AGP 9 this lives on the flavor, not on android.externalNativeBuild.
+                arguments "-DGO_LIB_DIR=${goBuildDir.absolutePath}"
+            }
+        }
     }
     signingConfigs {
         debug {
@@ -109,12 +132,112 @@ android {
     externalNativeBuild {
         cmake {
             path "src/main/jni/CMakeLists.txt"
-          }
-      }
+        }
+    }
+
+    sourceSets {
+        main {
+            // build/go/<abi>/libchat.so has the layout jniLibs expects.
+            jniLibs.srcDirs += goBuildDir
+        }
+    }
+}
+
+
+def minSdk = rootProject.ext.has("minSdkVersion") ? rootProject.ext.minSdkVersion : 24
+
+def ndkDir = android.ndkDirectory
+if (ndkDir == null || !ndkDir.isDirectory()) {
+    def sdkDir = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    if (sdkDir != null) {
+        ndkDir = new File(sdkDir, "ndk/${android.ndkVersion}")
+    }
+}
+if (ndkDir == null || !ndkDir.isDirectory()) {
+    throw new GradleException(
+            "Android NDK not found. Install ndkVersion ${android.ndkVersion} " +
+            "or set ANDROID_HOME / ANDROID_SDK_ROOT.")
+}
+
+def osName = System.getProperty("os.name").toLowerCase()
+def hostTag = osName.contains("mac") ? "darwin-x86_64"
+        : osName.contains("windows") ? "windows-x86_64"
+        : "linux-x86_64"
+
+// Android Studio's Gradle daemon often does not inherit the shell PATH, so look
+// in the usual Go install locations before falling back to `go` on PATH.
+// Override with -PgoBin=/path/to/go.
+def goBin = findProperty("goBin")
+if (!goBin) {
+    def userHome = System.getProperty("user.home")
+    def candidates = []
+    def goroot = System.getenv("GOROOT")
+    if (goroot) {
+        candidates << "${goroot}/bin/go"
+    }
+    if (userHome) {
+        candidates << "${userHome}/.local/go/bin/go"
+        candidates << "${userHome}/go/bin/go"
+        candidates << "${userHome}/sdk/go/bin/go"
+    }
+    candidates << "/usr/local/go/bin/go"
+    candidates << "/opt/homebrew/bin/go"
+    goBin = candidates.find { new File(it).canExecute() } ?: "go"
+}
+
+def goTasks = enabledAbis.collect { abi ->
+    def target = goTargets[abi]
+    if (target == null) {
+        throw new GradleException("No Go toolchain mapping for ABI '${abi}'")
+    }
+
+    def outDir = new File(goBuildDir, abi)
+    def clang = new File(ndkDir,
+            "toolchains/llvm/prebuilt/${hostTag}/bin/" +
+            "${target.triple}${minSdk}-clang")
+
+    tasks.register("buildGo${abi.replace('-', '_')}", Exec) {
+        group = "go"
+        description = "Build shared/go as libchat.so for ${abi}"
+        workingDir = goModuleDir
+
+        environment "CGO_ENABLED", "1"
+        environment "GOOS", "android"
+        environment "GOARCH", target.goarch
+        environment "CC", clang.absolutePath
+        environment "CGO_CFLAGS", "-O2"
+        environment "CGO_LDFLAGS", "-Wl,-z,max-page-size=16384"
+
+        commandLine goBin, "build",
+                "-buildmode=c-shared",
+                "-trimpath",
+                "-ldflags=-s -w -extldflags=-Wl,-soname,libchat.so",
+                "-o", new File(outDir, "libchat.so").absolutePath,
+                "."
+
+        doFirst { outDir.mkdirs() }
+
+        inputs.files(fileTree(goModuleDir) {
+            include "**/*.go", "go.mod", "go.sum"
+        })
+        outputs.file(new File(outDir, "libchat.so"))
+        outputs.file(new File(outDir, "libchat.h"))
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn goTasks
+}
+tasks.configureEach { t ->
+    if (t.name.startsWith("configureCMake")
+            || t.name.startsWith("buildCMake")
+            || t.name.contains("JniLibFolders")
+            || t.name.contains("NativeLibs")) {
+        t.dependsOn goTasks
+    }
 }
 
 dependencies {
-    // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
     if (hermesEnabled.toBoolean()) {
