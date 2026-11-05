@@ -29,5 +29,4 @@ func ChatFree(ptr *C.char) {
 	}
 }
 
-// main is required by -buildmode=c-archive. It is never called.
 func main() {}
